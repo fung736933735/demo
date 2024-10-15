@@ -56,33 +56,42 @@ class GiftRepository
                     'gift_money'   => $this->coin2money($eachUserGiftCoin),
                     'room_id'      => $room_id,
                 ];
-
-                $bill_id = GiftBill::query()->insertGetId($giftBillInfo);
+                GiftRecordPodcast::dispatch(json_encode($giftBillInfo));
 
                 # 上礼物墙
-                $this->addGiftWall($to_uid, $giftInfo['id']);
+                GiftWallPodcast::dispatch(json_encode([
+                    'to_uid' => $to_uid,
+                    'gift_id' => $giftInfo['id'],
+                ]));
 
                 // 记录收礼人返币帐单
                 $multipleNum = 100;//通过一定算法计算该礼物会返回给赠送者N倍的礼物价值;
                 $backCoin    = bcmul($multipleNum, $giftUnitCoin, 8);
                 if ($backCoin > 0) {
-                    User::query()->where('id', $to_uid)->increment('coin', $backCoin);
-                    $userCoinBalance = floatval($userCoinBalance) + floatval($backCoin);
-                    $bill            = [
-                        'title'   => '幸运礼物奖励',
-                        'uid'     => $to_uid,
-                        'number'  => $backCoin,
+                    UserBillPodcast::dispatch(json_encode([
+                        'title' => '幸运礼物奖励',
+                        'uid' => $to_uid,
+                        'number' => $backCoin,
                         'link_id' => $bill_id,
                         'balance' => $userCoinBalance,
-                        'mark'    => '',
-                        'status'  => 1,
+                        'mark' => '',
+                        'status' => 1,
                         'room_id' => $room_id
-                    ];
-                    UserBill::query()->insertGetId($bill);
+                    ]));
                 }
 
                 # 更新 房间排行榜 排行榜数据
-                RankingDataRepository::Factory()->giveGroupGiftUpdateRankings($room_id, $uid, $to_uid, $giftInfo, $eachUserGiftCoin);
+                $roomGiftRankingKey = 'ranking_' . $room_id;
+                // 添加用户礼物贡献
+                Redis::zadd($roomGiftRankingKey, (double)$eachUserGiftCoin, $uid);
+                //使用队列添加记录
+                RankingDataPodcast::dispatch(json_encode([
+                    'room_id' => $room_id,
+                    'uid' => $uid,
+                    'to_uid' => $to_uid,
+                    'giftInfo' => $giftInfo,
+                    'eachUserGiftCoin' => $eachUserGiftCoin,
+                ]));
 
                 # 更新用户在房间内的贡献币数和收益币数
                 RoomMemberRepository::Factory()->updateUserRoomIncomeAndExpend($room_id, $uid, $to_uid, $eachUserGiftCoin);
@@ -94,7 +103,12 @@ class GiftRepository
                 }
 
                 # 记录礼物收益分配
-                $this->giftGroupIncomeDistribution($eachUserGiftCoin, $room_id, $bill_id, $to_uid);
+                //因为上面记录礼物赠送记录使用列队没有bill_id，bill_id可以在队列通过uid、to_uid、gift_id、room_id条件查询出来
+                GiftGroupIncomeDistributionPodcast::dispatch(json_encode([
+                    'room_id' => $room_id,
+                    'to_uid' => $to_uid,
+                    'eachUserGiftCoin' => $eachUserGiftCoin,
+                ]));
 
                 # 更新送礼物人魅力值
                 Demo::dispatch([
